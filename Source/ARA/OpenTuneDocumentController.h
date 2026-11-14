@@ -95,12 +95,15 @@ public:
 
     /** Phase 4: 返回 EditableContentSnapshot — 唯一的跨域 snapshot 类型 */
     std::shared_ptr<const EditableContentSnapshot> readContentSnapshot(ContentKey key) const;
+    std::vector<ContentKey> listContentKeys() const;
 
     std::vector<PlaybackRegionProjection> getPlaybackRegionProjectionsFor(
         const std::vector<juce::ARAPlaybackRegion*>& playbackRegions) const;
+    std::vector<PlaybackRegionProjection> listPlaybackRegionProjections() const;
     // 用户 Read 入口：只读取当前内容范围内的首个 PlaybackRegion。
     // archive 恢复且已有有效 F0 的内容由 readRestoredAudio 自动读取，无需此入口。
     int requestReadAudioForPlaybackRegion(juce::ARAPlaybackRegion* playbackRegion);
+    int requestReadAudioForContentKey(ContentKey key);
     // ARA SDK requires DocumentController operations on main thread.
     // This method executes synchronously to comply with ARA thread constraints.
     // Callers should display a loading overlay before calling if UI responsiveness is needed.

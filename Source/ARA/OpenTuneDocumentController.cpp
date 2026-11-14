@@ -1078,6 +1078,18 @@ OpenTuneDocumentController::getPlaybackRegionProjectionsFor(
     return projections;
 }
 
+std::vector<OpenTuneDocumentController::PlaybackRegionProjection>
+OpenTuneDocumentController::listPlaybackRegionProjections() const
+{
+    std::vector<PlaybackRegionProjection> projections;
+    projections.reserve(playbackRegions_.size());
+    for (const auto& region : playbackRegions_) {
+        if (region.hasValidPlacement())
+            projections.push_back(makeProjection(region));
+    }
+    return projections;
+}
+
 int OpenTuneDocumentController::requestReadAudioForPlaybackRegion(
     juce::ARAPlaybackRegion* playbackRegion)
 {
@@ -1201,6 +1213,17 @@ int OpenTuneDocumentController::requestReadAudioForPlaybackRegion(
 
     refreshRegisteredRenderers(publishModelChange());
     return 1;
+}
+
+int OpenTuneDocumentController::requestReadAudioForContentKey(ContentKey key)
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    for (const auto& region : playbackRegions_) {
+        const auto projection = makeProjection(region);
+        if (projection.contentKey == key)
+            return requestReadAudioForPlaybackRegion(region.playbackRegion);
+    }
+    return -1;
 }
 
 void OpenTuneDocumentController::requestReadAudioForPlaybackRegionAsync(
@@ -2861,6 +2884,18 @@ OpenTuneDocumentController::readContentSnapshot(ContentKey key) const
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return nullptr;
     return mod->snapshotContent();
+}
+
+std::vector<ContentKey> OpenTuneDocumentController::listContentKeys() const
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    std::vector<ContentKey> keys;
+    keys.reserve(audioModifications_.size());
+    for (const auto& modification : audioModifications_) {
+        if (modification.hasContentState() && modification.contentKey().isValid())
+            keys.push_back(modification.contentKey());
+    }
+    return keys;
 }
 
 // ARA mutation API implementations — Processor delegates ARA writes here
