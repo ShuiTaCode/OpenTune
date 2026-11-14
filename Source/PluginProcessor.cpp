@@ -1,4 +1,6 @@
 #include "PluginProcessor.h"
+#include "Remote/RemoteBridgeClient.h"
+#include "Remote/RemoteRequestDispatcher.h"
 #if JucePlugin_Build_Standalone
 #include "SourceStore.h"
 #include "StandaloneArrangement.h"
@@ -595,6 +597,13 @@ OpenTuneAudioProcessor::OpenTuneAudioProcessor()
     // may do a state round-trip) -- it caches the payload instead.
     editVersionParam_ = new juce::AudioParameterInt("editVersion", "EditVersion", 0, 100000, 0);
     addParameter(editVersionParam_);
+#if !JucePlugin_Build_Standalone
+    const int pairingCode = juce::Random::getSystemRandom().nextInt(
+        juce::Range<int>(1, 1000000));
+    reaperAiPairingCodeParam_ = new juce::AudioParameterInt(
+        "reaperAiPairingCode", "REAPER AI Pairing Code", 1, 999999, pairingCode);
+    addParameter(reaperAiPairingCodeParam_);
+#endif
 
     // Pure in-memory state is safe to expose before runtime initialization.
 #if JucePlugin_Build_Standalone
@@ -1108,6 +1117,19 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
 
     ProcessRenderRuntime::getInstance().retainOwner();
     runtimeStateInitialized_.store(true, std::memory_order_release);
+#if !JucePlugin_Build_Standalone
+    remoteRequestDispatcher_ = std::make_unique<RemoteRequestDispatcher>(*this);
+    remoteBridgeClient_ = std::make_unique<RemoteBridgeClient>(
+        [this]() {
+            return reaperAiPairingCodeParam_ != nullptr
+                ? reaperAiPairingCodeParam_->get()
+                : 1;
+        },
+        [this](const juce::var& request) {
+            return remoteRequestDispatcher_->dispatch(request);
+        });
+    remoteBridgeClient_->start();
+#endif
 }
 
 OpenTuneAudioProcessor::~OpenTuneAudioProcessor() {
@@ -1126,6 +1148,10 @@ OpenTuneAudioProcessor::~OpenTuneAudioProcessor() {
     // Stop the tick timer first — no more timerCallback after this point.
 #if !JucePlugin_Build_Standalone
     stopTimer();
+    if (remoteBridgeClient_)
+        remoteBridgeClient_->stop();
+    remoteBridgeClient_.reset();
+    remoteRequestDispatcher_.reset();
 #endif
 
     // 析构最前段生命周期动作（此后再无异步任务访问裸 this）：
@@ -3167,6 +3193,112 @@ std::shared_ptr<const EditableContentSnapshot> OpenTuneAudioProcessor::getConten
     }
 
     return nullptr;
+}
+
+std::vector<ContentKey> OpenTuneAudioProcessor::listRemoteContentKeys() const
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return {};
+
+    std::vector<ContentKey> keys;
+#if JucePlugin_Enable_ARA
+    if (const auto* dc = getDocumentController()) {
+        auto araKeys = dc->listContentKeys();
+        keys.insert(keys.end(), araKeys.begin(), araKeys.end());
+    }
+#endif
+#if !JucePlugin_Build_Standalone
+    if (const auto* session = getCaptureSession()) {
+        for (const auto& segment : session->listSegments()) {
+            if (segment.contentKey.isValid())
+                keys.push_back(segment.contentKey);
+        }
+    }
+#endif
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+bool OpenTuneAudioProcessor::requestRemoteAnalysis(ContentKey key)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return false;
+
+    auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr)
+        return false;
+    if (!snapshot->hasUsableOriginalF0()) {
+#if JucePlugin_Enable_ARA
+        if (key.domainKind == DomainKind::ARAAudioModification) {
+            if (auto* dc = getDocumentController())
+                return dc->requestReadAudioForContentKey(key) >= 0;
+        }
+#endif
+        return snapshot->originalF0State == OriginalF0State::Extracting;
+    }
+
+    if (!snapshot->noteTopologyInitialized) {
+        if (!generateNotesOnlyByContentKey(key, NoteGeneratorParams{}))
+            return false;
+    }
+    return true;
+}
+
+RemoteNoteTargetEditResult OpenTuneAudioProcessor::applyRemoteNoteTargets(
+    ContentKey key,
+    uint64_t expectedContentRevision,
+    uint64_t expectedNotesRevision,
+    const std::vector<RemoteNoteTarget>& targets,
+    juce::String undoDescription)
+{
+    RemoteNoteTargetEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr) {
+        result.status = RemoteNoteTargetPlanStatus::NoteNotFound;
+        return result;
+    }
+
+    auto plan = planRemoteNoteTargetEdit(
+        key, *snapshot, expectedContentRevision, expectedNotesRevision, targets);
+    result.status = plan.status;
+    if (plan.status == RemoteNoteTargetPlanStatus::NoChange) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != RemoteNoteTargetPlanStatus::Ready)
+        return result;
+
+    const ContentEditRangeFrames affectedRange{
+        plan.affectedRange.startFrame,
+        plan.affectedRange.endFrameExclusive
+    };
+    result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+        key, plan.afterNotes, plan.afterSegments, affectedRange);
+    if (result.contentSnapshot == nullptr) {
+        result.status = RemoteNoteTargetPlanStatus::InvalidRequest;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_,
+        key,
+        std::move(undoDescription),
+        std::move(plan.beforeNotes),
+        std::move(plan.afterNotes),
+        std::move(plan.beforeSegments),
+        std::move(plan.afterSegments),
+        affectedRange));
+    return result;
 }
 
 const ContentRenderService* OpenTuneAudioProcessor::resolveReadableContentRenderService(ContentKey key) const noexcept

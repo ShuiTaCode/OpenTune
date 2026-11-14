@@ -61,6 +61,7 @@
 #include "Content/ContentKey.h"
 #include "Content/OriginalF0FailureEvent.h"
 #include "Content/ContentEditCommands.h"
+#include "Remote/RemoteNoteTargetEdit.h"
 #include "Utils/SelectedNoteParameterEdit.h"
 #include "Utils/SelectedNoteEqEdit.h"
 #include "Utils/SelectedNoteDeleteEdit.h"
@@ -174,6 +175,8 @@ namespace Capture {
  * 管理多轨道、Clip、音高曲线、渲染缓存等核心数据。
  */
 struct ExternalEditDocument;
+class RemoteBridgeClient;
+class RemoteRequestDispatcher;
 
 class OpenTuneAudioProcessor : public juce::AudioProcessor
 #if JucePlugin_Build_Standalone
@@ -344,6 +347,7 @@ private:
     juce::AudioBuffer<float> clipReadScratch_;
 
     juce::AudioParameterInt* editVersionParam_{nullptr};
+    juce::AudioParameterInt* reaperAiPairingCodeParam_{nullptr};
 #if JucePlugin_Build_Standalone
     std::atomic<juce::int64> lastControlTimestamp_{0};
     std::atomic<int> lastControlType_{static_cast<int>(DiagnosticControlCall::None)};
@@ -415,6 +419,8 @@ private:
     std::unique_ptr<StandaloneContentRepository> standaloneContentRepository_;
 #endif
     std::shared_ptr<ContentEditCommands> contentCommands_;
+    std::unique_ptr<RemoteRequestDispatcher> remoteRequestDispatcher_;
+    std::unique_ptr<RemoteBridgeClient> remoteBridgeClient_;
 #if JucePlugin_Build_Standalone
     std::unique_ptr<StandaloneArrangement> standaloneArrangement_;
     PlacementClipboard clipClipboard_;
@@ -715,6 +721,14 @@ public:
 
     // ── ContentKey-based mutation and snapshot APIs (Phase 4.3) ─────────────────
     std::shared_ptr<const EditableContentSnapshot> getContentSnapshot(ContentKey key) const;
+    std::vector<ContentKey> listRemoteContentKeys() const;
+    bool requestRemoteAnalysis(ContentKey key);
+    RemoteNoteTargetEditResult applyRemoteNoteTargets(
+        ContentKey key,
+        uint64_t expectedContentRevision,
+        uint64_t expectedNotesRevision,
+        const std::vector<RemoteNoteTarget>& targets,
+        juce::String undoDescription);
 
     bool setContentReferenceFeatures(ContentKey key, const ReferenceFeatureSet& features);
 

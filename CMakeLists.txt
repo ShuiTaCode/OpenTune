@@ -842,6 +842,12 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/DrawNoteEdit.h
         Source/Utils/NoteResizeEdit.cpp
         Source/Utils/NoteResizeEdit.h
+        Source/Remote/RemoteNoteTargetEdit.cpp
+        Source/Remote/RemoteNoteTargetEdit.h
+        Source/Remote/RemoteBridgeClient.cpp
+        Source/Remote/RemoteBridgeClient.h
+        Source/Remote/RemoteRequestDispatcher.cpp
+        Source/Remote/RemoteRequestDispatcher.h
         Source/Utils/AutomationLane.cpp
         Source/Utils/AutomationLane.h
         Source/Utils/VolumeEnvelopeEditAction.cpp
@@ -1762,6 +1768,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneSelectedNoteParameterEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME SelectedNoteParameterEditTests COMMAND OpenTuneSelectedNoteParameterEditTests)
+
+    add_executable(OpenTuneRemoteNoteTargetEditTests
+        Tests/RemoteNoteTargetEditTests.cpp
+    )
+    target_include_directories(OpenTuneRemoteNoteTargetEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneRemoteNoteTargetEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneRemoteNoteTargetEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME RemoteNoteTargetEditTests COMMAND OpenTuneRemoteNoteTargetEditTests)
 
     add_executable(OpenTuneSelectedNoteEqEditTests
         Tests/SelectedNoteEqEditTests.cpp
